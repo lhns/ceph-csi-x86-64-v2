@@ -49,7 +49,7 @@ ran() {
 	! grep -q 'Ran 0 of' "$log"
 }
 
-chmod +x e2e.test
+[ -x e2e.test ] || chmod +x e2e.test
 scripts/github-action-helper.sh install_minikube_prereqs
 sudo sysctl fs.protected_regular=0
 MEMORY=6144 scripts/minikube.sh up
