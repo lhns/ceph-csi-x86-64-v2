@@ -71,6 +71,10 @@ if [ "$suite" = acceptance ]; then
 	exit
 fi
 
+# ci/centos preloads vault:latest from its registry mirror; docker.io dropped that tag (1.13.3 was the last).
+docker pull -q docker.io/library/vault:1.13.3
+docker tag docker.io/library/vault:1.13.3 docker.io/library/vault:latest
+
 # single-node-k8s.sh (ci/centos). It gives Rook three OSDs, as partitions of one disk; the EC pool needs three.
 disk=/dev/$(scripts/github-action-helper.sh find_extra_block_dev 2>/dev/null)
 sudo sgdisk -n1:0:+6G -n2:0:+6G -n3:0:0 "$disk"
