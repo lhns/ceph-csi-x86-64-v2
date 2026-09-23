@@ -1,0 +1,33 @@
+# One e2e job run against upstream's own image instead of ours, in the same harness.
+# If it fails the same way, the failure is the runner or the harness, not our build.
+name: e2e-upstream-image
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        type: choice
+        options: [mini, operator, helm, upgrade, external-storage, acceptance]
+      k8s:
+        default: "1.35"
+      type:
+        description: cephfs, rbd, nfs or nvmeof
+        default: ""
+permissions:
+  contents: read
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    name: e2e ${{ inputs.suite }} k8s-${{ inputs.k8s }} ${{ inputs.type }} (upstream image)
+    steps:
+      - uses: actions/checkout@v7
+      - run: ./build.sh checkout
+      - run: ./build.sh make containerized-build TARGET=e2e.test
+      - run: docker pull "quay.io/cephcsi/cephcsi:$(./build.sh version)"
+      - run: cd src && E2E_IMAGE_EL=10 ../test/e2e.sh ${{ inputs.suite }} ${{ inputs.k8s }} ${{ inputs.type }}
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-logs
+          path: /tmp/acceptance-e2e-logs/
+          retention-days: 7
