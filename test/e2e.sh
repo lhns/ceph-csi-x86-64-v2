@@ -16,10 +16,23 @@ ns=cephcsi-e2e-$suite
 image=quay.io/cephcsi/cephcsi:$CSI_IMAGE_VERSION
 
 # Every job must test our build: the EL9 image, still under that tag at the end (a pull would have replaced it).
+# E2E_IMAGE_EL=10 is for e2e-upstream-image.yml.
 ours=$(docker image inspect -f '{{.Id}}' "$image")
-docker run --rm --entrypoint cat "$image" /etc/os-release | grep -qx 'VERSION_ID="9\..*"'
+docker run --rm --entrypoint cat "$image" /etc/os-release | grep -qx "VERSION_ID=\"${E2E_IMAGE_EL:-9}\..*\""
 trap 'test "$(docker image inspect -f "{{.Id}}" "$image")" = "$ours" || { echo "$image was replaced by a pull" >&2; exit 1; }' EXIT
-trap 'scripts/github-action-helper.sh collect_logs || true' ERR
+log=$PWD/e2e-output.log
+collect() { # upstream's collect_logs, plus the ceph-csi namespaces it doesn't cover
+	scripts/github-action-helper.sh collect_logs || true
+	local n p d=/tmp/acceptance-e2e-logs
+	kubectl describe pvc -A >"$d/pvc-describe.txt" 2>&1 || true
+	for n in $(kubectl get ns -o name | grep -E 'cephcsi|ceph-csi|k8s-storage' | cut -d/ -f2); do
+		kubectl -n "$n" get all,events -o wide >"$d/$n-all.txt" 2>&1 || true
+		for p in $(kubectl -n "$n" get pods -o name); do
+			kubectl -n "$n" logs "$p" --all-containers --prefix >"$d/$n-${p#pod/}.log" 2>&1 || true
+		done
+	done
+}
+trap collect ERR
 
 only() { # --test-* (and with $2, --deploy-*) flags enabling one driver
 	local d f=""
@@ -29,7 +42,12 @@ only() { # --test-* (and with $2, --deploy-*) flags enabling one driver
 	done
 	echo "$f"
 }
-run_e2e() { make run-e2e NAMESPACE="$ns" E2E_ARGS="--delete-namespace-on-failure=false $*"; }
+run_e2e() { make run-e2e NAMESPACE="$ns" E2E_ARGS="--delete-namespace-on-failure=false $*" 2>&1 | tee -a "$log"; }
+# A suite that skips every spec passes; fail it instead.
+ran() {
+	grep -o 'Ran [0-9]* of [0-9]* Specs' "$log" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+	! grep -q 'Ran 0 of' "$log"
+}
 
 chmod +x e2e.test
 scripts/github-action-helper.sh install_minikube_prereqs
@@ -47,7 +65,8 @@ if [ "$suite" = acceptance ]; then
 	cd e2e
 	../e2e.test -test.v -ginkgo.v --ginkgo.label-filter=acceptance --ginkgo.timeout=25m --deploy-timeout=10 \
 		--test-rbd=true --test-cephfs=true --test-nfs=true --test-nvmeof=false \
-		--deploy-rbd=false --deploy-cephfs=false --operator-deployment --skip-vault=true
+		--deploy-rbd=false --deploy-cephfs=false --operator-deployment --skip-vault=true 2>&1 | tee -a "$log"
+	ran
 	exit
 fi
 
@@ -71,9 +90,10 @@ operator)
 	run_e2e "$(only "$type") --deploy-cephfs=false --deploy-rbd=false --deploy-nfs=false --operator-deployment=true"
 	;;
 helm)
-	# mini-e2e-helm.groovy minus its --helm-test flag, which the 3.18 e2e no longer has (#6512).
+	# mini-e2e-helm.groovy, less what the 3.18 e2e dropped with --helm-test (#6512): the e2e now
+	# creates the StorageClasses and secrets itself, so the charts must not.
 	scripts/install-helm.sh up
-	scripts/install-helm.sh install-cephcsi --namespace "$ns" --deploy-sc --deploy-secret
+	scripts/install-helm.sh install-cephcsi --namespace "$ns"
 	run_e2e "--deploy-cephfs=false --deploy-rbd=false $(only "$type")"
 	;;
 upgrade)
@@ -93,7 +113,7 @@ external-storage)
 		case $driver in */driver-nfs.yaml) [ "${TEST_NFS:-}" = true ] || continue ;; esac
 		kubernetes/test/bin/ginkgo --vv -focus='External.Storage.*.csi.ceph.com' \
 			-skip='\[Feature:|\[Disruptive\]|Generic Ephemeral-volume' \
-			kubernetes/test/bin/e2e.test -- -storage.testdriver="$PWD/$driver"
+			kubernetes/test/bin/e2e.test -- -storage.testdriver="$PWD/$driver" 2>&1 | tee -a "$log"
 	done
 	;;
 *)
@@ -101,3 +121,4 @@ external-storage)
 	exit 2
 	;;
 esac
+ran

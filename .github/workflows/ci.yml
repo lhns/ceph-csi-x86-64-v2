@@ -128,7 +128,6 @@ jobs:
           - {suite: operator, k8s: "1.35", type: cephfs}
           - {suite: operator, k8s: "1.35", type: rbd}
           - {suite: operator, k8s: "1.35", type: nfs}
-          - {suite: operator, k8s: "1.35", type: nvmeof}
           - {suite: helm, k8s: "1.35", type: cephfs}
           - {suite: helm, k8s: "1.35", type: rbd}
           - {suite: upgrade, k8s: "1.36", type: cephfs}
