@@ -51,7 +51,11 @@ if [ "$suite" = acceptance ]; then
 	exit
 fi
 
-# single-node-k8s.sh (ci/centos)
+# single-node-k8s.sh (ci/centos). It gives Rook three OSDs, as partitions of one disk; the EC pool needs three.
+disk=/dev/$(scripts/github-action-helper.sh find_extra_block_dev 2>/dev/null)
+sudo sgdisk -n1:0:+6G -n2:0:+6G -n3:0:0 "$disk"
+sudo partprobe "$disk"
+lsblk "$disk"
 ROOK_DEPLOY_TIMEOUT=900 scripts/minikube.sh deploy-rook
 scripts/minikube.sh create-block-pool
 scripts/minikube.sh create-block-ec-pool
