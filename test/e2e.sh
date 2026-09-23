@@ -55,7 +55,7 @@ scripts/github-action-helper.sh install_minikube_prereqs
 sudo sysctl fs.protected_regular=0
 MEMORY=6144 scripts/minikube.sh up
 scripts/github-action-helper.sh prepare_disk
-docker pull "$ROOK_CEPH_CLUSTER_IMAGE"
+for i in 1 2 3 4 5; do docker pull "$ROOK_CEPH_CLUSTER_IMAGE" && break; sleep 30; done
 scripts/minikube.sh cephcsi
 scripts/minikube.sh k8s-sidecar
 
