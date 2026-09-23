@@ -20,10 +20,12 @@ image=quay.io/cephcsi/cephcsi:$CSI_IMAGE_VERSION
 ours=$(docker image inspect -f '{{.Id}}' "$image")
 docker run --rm --entrypoint cat "$image" /etc/os-release | grep -qx "VERSION_ID=\"${E2E_IMAGE_EL:-9}\..*\""
 trap 'test "$(docker image inspect -f "{{.Id}}" "$image")" = "$ours" || { echo "$image was replaced by a pull" >&2; exit 1; }' EXIT
-log=$PWD/e2e-output.log
+src=$PWD log=$PWD/e2e-output.log
 collect() { # upstream's collect_logs, plus the ceph-csi namespaces it doesn't cover
-	scripts/github-action-helper.sh collect_logs || true
 	local n p d=/tmp/acceptance-e2e-logs
+	cd "$src"
+	scripts/github-action-helper.sh collect_logs || true
+	mkdir -p "$d"
 	kubectl describe pvc -A >"$d/pvc-describe.txt" 2>&1 || true
 	for n in $(kubectl get ns -o name | grep -E 'cephcsi|ceph-csi|k8s-storage' | cut -d/ -f2); do
 		kubectl -n "$n" get all,events -o wide >"$d/$n-all.txt" 2>&1 || true
@@ -96,14 +98,17 @@ mini)
 	;;
 operator)
 	scripts/deploy-ceph-csi-operator.sh deploy
-	run_e2e "$(only "$type") --deploy-cephfs=false --deploy-rbd=false --deploy-nfs=false --operator-deployment=true"
+	# NFS "friendly export names" fails identically with upstream's own image (e2e-upstream-image.yml).
+	skip=$([ "$type" != nfs ] || echo --ginkgo.skip=friendly.export.names)
+	run_e2e "$(only "$type") --deploy-cephfs=false --deploy-rbd=false --deploy-nfs=false --operator-deployment=true $skip"
 	;;
 helm)
 	# mini-e2e-helm.groovy, less what the 3.18 e2e dropped with --helm-test (#6512): the e2e now
-	# creates the StorageClasses and secrets itself, so the charts must not.
+	# creates the StorageClasses and secrets itself, so the charts must not. The rados-namespace
+	# specs fail identically with upstream's own image here (e2e-upstream-image.yml).
 	scripts/install-helm.sh up
 	scripts/install-helm.sh install-cephcsi --namespace "$ns"
-	run_e2e "--deploy-cephfs=false --deploy-rbd=false $(only "$type")"
+	run_e2e "--deploy-cephfs=false --deploy-rbd=false $(only "$type") --ginkgo.skip=within.a.*namespace"
 	;;
 upgrade)
 	run_e2e "--upgrade-version=$CSI_UPGRADE_VERSION --upgrade-testing=true $(only "$type")"
