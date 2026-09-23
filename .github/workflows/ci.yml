@@ -23,10 +23,9 @@ jobs:
       - id: v
         run: echo "version=$(./build.sh version)" >> "$GITHUB_OUTPUT"
       - run: ./build.sh checkout
+      # Upstream's multi-arch-build, amd64 half (we publish amd64 only).
       - name: make image-cephcsi
         run: ./build.sh image
-      - name: make containerized-build (upstream single-arch-build)
-        run: ./build.sh make containerized-build
       - name: make containerized-build TARGET=e2e.test (upstream e2e-build-test)
         run: ./build.sh make containerized-build TARGET=e2e.test
       - name: CPU smoke binary, built in the devel image
