@@ -29,6 +29,7 @@ collect() { # upstream's collect_logs, plus the ceph-csi namespaces it doesn't c
 		kubectl -n "$n" get all,events -o wide >"$d/$n-all.txt" 2>&1 || true
 		for p in $(kubectl -n "$n" get pods -o name); do
 			kubectl -n "$n" logs "$p" --all-containers --prefix >"$d/$n-${p#pod/}.log" 2>&1 || true
+			kubectl -n "$n" logs "$p" --all-containers --prefix --previous >"$d/$n-${p#pod/}.previous.log" 2>&1 || true
 		done
 	done
 }
@@ -76,6 +77,10 @@ sudo sgdisk -n1:0:+6G -n2:0:+6G -n3:0:0 "$disk"
 sudo partprobe "$disk"
 lsblk "$disk"
 ROOK_DEPLOY_TIMEOUT=900 scripts/minikube.sh deploy-rook
+# The NVMe-oF nodeplugin connects over NVMe/TCP; the runner's cloud kernel ships that module separately.
+if [ "$type" = nvmeof ]; then
+	sudo modprobe nvme-tcp || { sudo apt-get install -y -qq "linux-modules-extra-$(uname -r)" && sudo modprobe nvme-tcp; }
+fi
 scripts/minikube.sh create-block-pool
 scripts/minikube.sh create-block-ec-pool
 scripts/install-snapshot.sh delete-crd || true
