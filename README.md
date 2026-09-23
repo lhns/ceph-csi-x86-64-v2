@@ -15,20 +15,27 @@ set through upstream's `build.env` and the Dockerfile's `FINAL_BASE_IMAGE`. Ever
 
 ## Tests
 
-[`ci.yml`](.github/workflows/ci.yml) runs upstream's test suite against this build:
+[`ci.yml`](.github/workflows/ci.yml) runs upstream's tests against this build:
 
-- upstream's GitHub checks: `go-test`, `go-test-api`, `go-lint`, `lint-extras`, `codespell`, `mod-check`, `link-check`,
-  `uncommitted-code-check`, `e2e.test` and single-arch builds;
-- upstream's CentOS CI e2e jobs and its minikube acceptance workflow, on GitHub runners (minikube + Rook):
-  cephfs, rbd, nfs and nvmeof, via manifests, the operator and the Helm charts; upgrade from `CSI_UPGRADE_VERSION`;
+- upstream's GitHub checks, target for target: `go-test`, `go-test-api`, `go-lint`, `lint-extras`, `codespell`,
+  `mod-check`, `link-check`, `tickgit`, `uncommitted-code-check`, the `e2e.test` build, `image-cephcsi` (amd64);
+- upstream's CentOS CI e2e jobs (`ci/centos` branch) and its minikube acceptance workflow, on GitHub runners with
+  minikube and Rook, via [`test/e2e.sh`](test/e2e.sh): cephfs, rbd, nfs and nvmeof on Kubernetes 1.33–1.35;
+  the same through the operator and through the Helm charts; upgrade from `CSI_UPGRADE_VERSION`;
   Kubernetes external-storage;
 - [`test/cpu.sh`](test/cpu.sh): the image's binaries and a librados/librbd/libcephfs smoke test under
   `qemu-x86_64 -cpu IvyBridge` and `-cpu Nehalem`. Upstream's v3.18.0 image must fail the same test.
 
-A push to `main` publishes the tested image only after all of that passes.
+A few specs fail identically with upstream's own image in this harness; `e2e.sh` tolerates exactly those, by name.
+[`e2e-upstream-image.yml`](.github/workflows/e2e-upstream-image.yml) runs one e2e job against upstream's image,
+to tell a regression in this build from a harness or runner problem.
 
-## Updating
+## Releasing
 
-[`versions.Dockerfile`](versions.Dockerfile) pins the upstream tag and the base digests. It is never built.
-Dependabot opens a PR when upstream publishes a release; CI runs; merging publishes
-`ghcr.io/lhns/ceph-csi-x86-64-v2:<tag>`. Consumers pin the digest from the run summary.
+1. Upstream tags a release.
+2. Dependabot bumps the tag in [`versions.Dockerfile`](versions.Dockerfile) (the pins; never built) and opens a PR.
+3. CI runs everything above on the PR. Merging reruns it on `main`, then publishes the tested image as
+   `ghcr.io/lhns/ceph-csi-x86-64-v2:<tag>`; the digest is in the run summary.
+4. Consumers pin that digest.
+
+The Rocky 9 digests are bumped the same way. A rebuild republishes the same tag under a new digest.

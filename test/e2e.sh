@@ -46,6 +46,14 @@ only() { # --test-* (and with $2, --deploy-*) flags enabling one driver
 	echo "$f"
 }
 run_e2e() { make run-e2e NAMESPACE="$ns" E2E_ARGS="--delete-namespace-on-failure=false $*" 2>&1 | tee -a "$log"; }
+# Accept a failed run only if every failed spec matches $1. For specs that fail identically with upstream's
+# own image (e2e-upstream-image.yml); skipping them instead breaks the Ordered specs that follow.
+known_failures() {
+	local failed
+	failed=$(sed 's/\x1b\[[0-9;]*m//g' "$log" | grep -E '^\s*\[FAIL\] ' || true)
+	echo "$failed" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+	[ -n "$failed" ] && ! grep -vE "$1" <<<"$failed"
+}
 # A suite that skips every spec passes; fail it instead.
 ran() {
 	grep -o 'Ran [0-9]* of [0-9]* Specs' "$log" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
@@ -98,17 +106,16 @@ mini)
 	;;
 operator)
 	scripts/deploy-ceph-csi-operator.sh deploy
-	# NFS "friendly export names" fails identically with upstream's own image (e2e-upstream-image.yml).
-	skip=$([ "$type" != nfs ] || echo --ginkgo.skip=friendly.export.names)
-	run_e2e "$(only "$type") --deploy-cephfs=false --deploy-rbd=false --deploy-nfs=false --operator-deployment=true $skip"
+	run_e2e "$(only "$type") --deploy-cephfs=false --deploy-rbd=false --deploy-nfs=false --operator-deployment=true" ||
+		known_failures 'friendly export names'
 	;;
 helm)
 	# mini-e2e-helm.groovy, less what the 3.18 e2e dropped with --helm-test (#6512): the e2e now
-	# creates the StorageClasses and secrets itself, so the charts must not. The rados-namespace
-	# specs fail identically with upstream's own image here (e2e-upstream-image.yml).
+	# creates the StorageClasses and secrets itself, so the charts must not. The rados-namespace specs
+	# restart the plugin by the manifests' pod labels, which the charts don't carry.
 	scripts/install-helm.sh up
 	scripts/install-helm.sh install-cephcsi --namespace "$ns"
-	run_e2e "--deploy-cephfs=false --deploy-rbd=false $(only "$type") --ginkgo.skip=within.a.*namespace"
+	run_e2e "--deploy-cephfs=false --deploy-rbd=false $(only "$type")" || known_failures 'within a .*namespace'
 	;;
 upgrade)
 	run_e2e "--upgrade-version=$CSI_UPGRADE_VERSION --upgrade-testing=true $(only "$type")"
