@@ -1,0 +1,173 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+env:
+  # Known x86-64-v3 image: the negative control for the CPU test.
+  UPSTREAM_V3_IMAGE: quay.io/cephcsi/cephcsi:v3.18.0@sha256:0a92e5c8c153cd17b2f6d110de336651df0e8c1040fcb6a175ef66b131018937
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: v
+        run: echo "version=$(./build.sh version)" >> "$GITHUB_OUTPUT"
+      - run: ./build.sh checkout
+      - name: make image-cephcsi
+        run: ./build.sh image
+      - name: make containerized-build (upstream single-arch-build)
+        run: ./build.sh make containerized-build
+      - name: make containerized-build TARGET=e2e.test (upstream e2e-build-test)
+        run: ./build.sh make containerized-build TARGET=e2e.test
+      - name: CPU smoke binary, built in the devel image
+        run: docker run --rm -v "$PWD/test:/t" quay.io/cephcsi/cephcsi:devel gcc -O2 -o /t/smoke /t/smoke.c -lrados -lrbd -lcephfs
+      - name: Base image
+        run: |
+          img=quay.io/cephcsi/cephcsi:${{ steps.v.outputs.version }}
+          {
+            echo '### Image'
+            echo '```'
+            docker run --rm --entrypoint sh "$img" -c 'grep PRETTY_NAME /etc/os-release; rpm -q glibc librados2 librbd1 libcephfs2 ceph-common; cephcsi --version'
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - run: docker save "quay.io/cephcsi/cephcsi:${{ steps.v.outputs.version }}" | zstd -T0 -o image.tar.zst
+      - uses: actions/upload-artifact@v7
+        with:
+          name: build
+          path: |
+            image.tar.zst
+            src/e2e.test
+            test/smoke
+          retention-days: 7
+
+  # Upstream's .github/workflows, target for target.
+  static:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [go-test, go-test-api, go-lint, lint-extras, codespell, mod-check, link-check, tickgit]
+    steps:
+      - uses: actions/checkout@v7
+      - run: ./build.sh checkout
+      - run: ./build.sh make containerized-test TARGET=${{ matrix.target }}
+
+  uncommitted-code-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: ./build.sh checkout
+      - run: ./build.sh make generate-deploy
+      - run: ./build.sh make check-all-committed
+
+  cpu:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: build
+      - run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
+          zstd -dc image.tar.zst | docker load
+          docker pull -q "$UPSTREAM_V3_IMAGE"
+          chmod +x test/smoke
+      - name: ours on Ivy Bridge (kube-worker-04)
+        run: test/cpu.sh "quay.io/cephcsi/cephcsi:${{ needs.build.outputs.version }}" IvyBridge pass
+      - name: ours on Nehalem (plain x86-64-v2, no AVX)
+        run: test/cpu.sh "quay.io/cephcsi/cephcsi:${{ needs.build.outputs.version }}" Nehalem pass
+      - name: upstream v3.18.0 on Ivy Bridge must be refused
+        run: test/cpu.sh "$UPSTREAM_V3_IMAGE" IvyBridge fail
+      - name: upstream v3.18.0 on Haswell runs (the harness is not the failure)
+        run: test/cpu.sh "$UPSTREAM_V3_IMAGE" Haswell pass
+
+  # Upstream's snyk jobs need its token; report-only substitute.
+  scan:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: build
+      - run: |
+          zstd -d image.tar.zst -o image.tar
+          docker run --rm -v "$PWD/image.tar:/image.tar:ro" aquasec/trivy:latest image --quiet --input /image.tar \
+            --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0
+
+  e2e:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {suite: acceptance, k8s: "1.35"}
+          - {suite: mini, k8s: "1.33", type: cephfs}
+          - {suite: mini, k8s: "1.33", type: rbd}
+          - {suite: mini, k8s: "1.33", type: nfs}
+          - {suite: mini, k8s: "1.33", type: nvmeof}
+          - {suite: mini, k8s: "1.34", type: cephfs}
+          - {suite: mini, k8s: "1.34", type: rbd}
+          - {suite: mini, k8s: "1.34", type: nfs}
+          - {suite: mini, k8s: "1.34", type: nvmeof}
+          - {suite: mini, k8s: "1.35", type: cephfs}
+          - {suite: mini, k8s: "1.35", type: rbd}
+          - {suite: mini, k8s: "1.35", type: nfs}
+          - {suite: mini, k8s: "1.35", type: nvmeof}
+          - {suite: operator, k8s: "1.35", type: cephfs}
+          - {suite: operator, k8s: "1.35", type: rbd}
+          - {suite: operator, k8s: "1.35", type: nfs}
+          - {suite: operator, k8s: "1.35", type: nvmeof}
+          - {suite: helm, k8s: "1.35", type: cephfs}
+          - {suite: helm, k8s: "1.35", type: rbd}
+          - {suite: upgrade, k8s: "1.36", type: cephfs}
+          - {suite: upgrade, k8s: "1.36", type: rbd}
+          - {suite: external-storage, k8s: "1.33"}
+          - {suite: external-storage, k8s: "1.34"}
+          - {suite: external-storage, k8s: "1.35"}
+    name: e2e ${{ matrix.suite }} k8s-${{ matrix.k8s }} ${{ matrix.type }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: ./build.sh checkout
+      - uses: actions/download-artifact@v8
+        with:
+          name: build
+      - run: zstd -dc image.tar.zst | docker load
+      - run: cd src && ../test/e2e.sh ${{ matrix.suite }} ${{ matrix.k8s }} ${{ matrix.type }}
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-logs-${{ matrix.suite }}-${{ matrix.k8s }}-${{ matrix.type }}
+          path: /tmp/acceptance-e2e-logs/
+          retention-days: 7
+
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build, static, uncommitted-code-check, cpu, e2e]
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: build
+      - run: |
+          zstd -dc image.tar.zst | docker load
+          ref=ghcr.io/lhns/ceph-csi-x86-64-v2:${{ needs.build.outputs.version }}
+          docker tag "quay.io/cephcsi/cephcsi:${{ needs.build.outputs.version }}" "$ref"
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker push "$ref"
+          digest=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "Published \`$ref@$digest\`" | tee -a "$GITHUB_STEP_SUMMARY"
