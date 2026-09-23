@@ -29,7 +29,7 @@ jobs:
       - name: make containerized-build TARGET=e2e.test (upstream e2e-build-test)
         run: ./build.sh make containerized-build TARGET=e2e.test
       - name: CPU smoke binary, built in the devel image
-        run: docker run --rm -v "$PWD/test:/t" quay.io/cephcsi/cephcsi:devel gcc -O2 -o /t/smoke /t/smoke.c -lrados -lrbd -lcephfs
+        run: docker run --rm -v "$PWD/test:/t" quay.io/cephcsi/cephcsi:devel gcc -O2 -D_FILE_OFFSET_BITS=64 -o /t/smoke /t/smoke.c -lrados -lrbd -lcephfs
       - name: Base image
         run: |
           img=quay.io/cephcsi/cephcsi:${{ steps.v.outputs.version }}
