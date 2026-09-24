@@ -79,7 +79,8 @@ if [ "$suite" = acceptance ]; then
 	scripts/minikube.sh install-snapshotter
 	ROOK_DEPLOY_TIMEOUT=600 KUBECTL_RETRY_DELAY=5 scripts/minikube.sh deploy-rook
 	cd e2e
-	../e2e.test -test.v -ginkgo.v --ginkgo.label-filter=acceptance --ginkgo.timeout=25m --deploy-timeout=10 \
+	# Upstream allows 25m; on these runners upstream's own image needs about 24.5m of that (e2e-upstream-image.yml).
+	../e2e.test -test.v -ginkgo.v --ginkgo.label-filter=acceptance --ginkgo.timeout=40m --deploy-timeout=10 \
 		--test-rbd=true --test-cephfs=true --test-nfs=true --test-nvmeof=false \
 		--deploy-rbd=false --deploy-cephfs=false --operator-deployment --skip-vault=true 2>&1 | tee -a "$log"
 	ran
