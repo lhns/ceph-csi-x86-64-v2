@@ -7,7 +7,7 @@ updates:
       interval: daily
     ignore:
       # EL10 is the x86-64-v3 baseline this repo exists to avoid.
-      - dependency-name: quay.io/rockylinux/rockylinux
+      - dependency-name: "*rockylinux/rockylinux"
         update-types: [version-update:semver-major]
   - package-ecosystem: github-actions
     directory: /
