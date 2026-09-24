@@ -95,7 +95,10 @@ docker tag docker.io/library/vault:1.13.3 docker.io/library/vault:latest
 disk=/dev/$(scripts/github-action-helper.sh find_extra_block_dev 2>/dev/null)
 sudo sgdisk -n1:0:+6G -n2:0:+6G -n3:0:0 "$disk"
 sudo partprobe "$disk"
+sudo udevadm settle
 lsblk "$disk"
+# Rook's OSD prepare skips a partition whose node is missing, leaving too few OSDs for the EC pool.
+ls "${disk}1" "${disk}2" "${disk}3"
 ROOK_DEPLOY_TIMEOUT=900 scripts/minikube.sh deploy-rook
 # The NVMe-oF nodeplugin connects over NVMe/TCP; the runner's cloud kernel ships that module separately.
 if [ "$type" = nvmeof ]; then
