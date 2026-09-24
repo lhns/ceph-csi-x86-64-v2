@@ -61,7 +61,12 @@ ran() {
 }
 
 [ -x e2e.test ] || chmod +x e2e.test
-scripts/github-action-helper.sh install_minikube_prereqs
+# The helper ignores failed downloads.
+for i in 1 2 3; do
+	scripts/github-action-helper.sh install_minikube_prereqs
+	! ls /usr/local/bin/cri-dockerd /usr/local/bin/crictl /opt/cni/bin/bridge >/dev/null || break
+	sleep 30
+done
 sudo sysctl fs.protected_regular=0
 MEMORY=6144 scripts/minikube.sh up
 scripts/github-action-helper.sh prepare_disk

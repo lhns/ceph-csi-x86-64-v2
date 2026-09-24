@@ -21,8 +21,8 @@ set through upstream's `build.env` and the Dockerfile's `FINAL_BASE_IMAGE`. Ever
   `mod-check`, `link-check`, `tickgit`, `uncommitted-code-check`, the `e2e.test` build, `image-cephcsi` (amd64);
 - upstream's CentOS CI e2e jobs (`ci/centos` branch) and its minikube acceptance workflow, on GitHub runners with
   minikube and Rook, via [`test/e2e.sh`](test/e2e.sh): cephfs, rbd, nfs and nvmeof on Kubernetes 1.33–1.35;
-  the same through the operator and through the Helm charts; upgrade from `CSI_UPGRADE_VERSION`;
-  Kubernetes external-storage;
+  cephfs, rbd and nfs through the operator, cephfs and rbd through the Helm charts; upgrade from
+  `CSI_UPGRADE_VERSION`; Kubernetes external-storage;
 - [`test/cpu.sh`](test/cpu.sh): the image's binaries and a librados/librbd/libcephfs smoke test under
   `qemu-x86_64 -cpu IvyBridge` and `-cpu Nehalem`. Upstream's v3.18.0 image must fail the same test.
 
