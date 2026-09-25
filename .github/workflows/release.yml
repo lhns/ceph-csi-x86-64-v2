@@ -1,0 +1,16 @@
+# Placeholder so release.yml can be dispatched on a branch (workflow_dispatch needs the file on main).
+# Replaced by the real workflow in the release PR.
+name: release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        default: ""
+      dry_run:
+        type: boolean
+        default: true
+jobs:
+  noop:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "placeholder; dispatch on the release PR branch"
