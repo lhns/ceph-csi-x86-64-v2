@@ -12,6 +12,9 @@ on:
       type:
         description: cephfs, rbd, nfs or nvmeof
         default: ""
+      version:
+        description: Upstream version; default the newest supported one
+        default: ""
 permissions:
   contents: read
 jobs:
@@ -21,9 +24,13 @@ jobs:
     name: e2e ${{ inputs.suite }} k8s-${{ inputs.k8s }} ${{ inputs.type }} (upstream image)
     steps:
       - uses: actions/checkout@v7
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: echo "CEPH_CSI_VERSION=${VERSION:-$(release/release.sh versions | tail -n1)}" >> "$GITHUB_ENV"
       - run: ./build.sh checkout
       - run: ./build.sh make containerized-build TARGET=e2e.test
-      - run: docker pull "quay.io/cephcsi/cephcsi:$(./build.sh version)"
+      - run: docker pull "quay.io/cephcsi/cephcsi:$CEPH_CSI_VERSION"
       - run: cd src && E2E_IMAGE_EL=10 ../test/e2e.sh ${{ inputs.suite }} ${{ inputs.k8s }} ${{ inputs.type }}
       - if: failure()
         uses: actions/upload-artifact@v7

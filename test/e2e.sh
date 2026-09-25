@@ -91,14 +91,22 @@ fi
 docker pull -q docker.io/library/vault:1.13.3
 docker tag docker.io/library/vault:1.13.3 docker.io/library/vault:latest
 
-# single-node-k8s.sh (ci/centos). It gives Rook three OSDs, as partitions of one disk; the EC pool needs three.
-disk=/dev/$(scripts/github-action-helper.sh find_extra_block_dev 2>/dev/null)
-sudo sgdisk -n1:0:+6G -n2:0:+6G -n3:0:0 "$disk"
-sudo partprobe "$disk"
+# single-node-k8s.sh (ci/centos). It gives Rook three OSDs, which the EC pool needs: two more LUNs on the
+# helper's iSCSI target. (Partitions of its one disk intermittently lose their device nodes under Rook.)
+tgt=$(sudo targetcli ls /iscsi 1 | grep -o 'iqn[^ ]*' | head -1)
+for n in 2 3; do
+	truncate -s 12G "$HOME/iscsi-disk$n.img"
+	sudo targetcli /backstores/fileio create "disk$n" "$HOME/iscsi-disk$n.img" 12G
+	sudo targetcli "/iscsi/$tgt/tpg1/luns" create "/backstores/fileio/disk$n"
+done
+sudo iscsiadm -m session --rescan
+for i in $(seq 20); do
+	[ "$(lsblk -dn -o TRAN | grep -c iscsi)" -lt 3 ] || break
+	sleep 3
+done
 sudo udevadm settle
-lsblk "$disk"
-# Rook's OSD prepare skips a partition whose node is missing, leaving too few OSDs for the EC pool.
-ls "${disk}1" "${disk}2" "${disk}3"
+lsblk
+[ "$(lsblk -dn -o TRAN | grep -c iscsi)" -eq 3 ]
 ROOK_DEPLOY_TIMEOUT=900 scripts/minikube.sh deploy-rook
 # The NVMe-oF nodeplugin connects over NVMe/TCP; the runner's cloud kernel ships that module separately.
 if [ "$type" = nvmeof ]; then
