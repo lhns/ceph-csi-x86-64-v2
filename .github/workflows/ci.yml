@@ -1,27 +1,54 @@
 name: ci
+# Tests only, for pushes and PRs. release.yml calls it per version with release: true to publish.
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      version:
+        description: Upstream version; default the newest supported one
+        default: ""
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+      release:
+        type: boolean
+        default: false
+      dry_run:
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.version }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 env:
   # Known x86-64-v3 image: the negative control for the CPU test.
   UPSTREAM_V3_IMAGE: quay.io/cephcsi/cephcsi:v3.18.0@sha256:0a92e5c8c153cd17b2f6d110de336651df0e8c1040fcb6a175ef66b131018937
 
 jobs:
-  build:
+  version:
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
       - uses: actions/checkout@v7
       - id: v
-        run: echo "version=$(./build.sh version)" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: echo "version=${VERSION:-$(release/release.sh versions | tail -n1)}" | tee -a "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    runs-on: ubuntu-24.04
+    env:
+      CEPH_CSI_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
       - run: ./build.sh checkout
       # Upstream's multi-arch-build, amd64 half (we publish amd64 only).
       - name: make image-cephcsi
@@ -32,17 +59,17 @@ jobs:
         run: docker run --rm -v "$PWD/test:/t" quay.io/cephcsi/cephcsi:devel gcc -O2 -D_FILE_OFFSET_BITS=64 -o /t/smoke /t/smoke.c -lrados -lrbd -lcephfs
       - name: Base image
         run: |
-          img=quay.io/cephcsi/cephcsi:${{ steps.v.outputs.version }}
+          img=quay.io/cephcsi/cephcsi:$CEPH_CSI_VERSION
           {
             echo '### Image'
             echo '```'
             docker run --rm --entrypoint sh "$img" -c 'grep PRETTY_NAME /etc/os-release; rpm -q glibc librados2 librbd1 libcephfs2 ceph-common; cephcsi --version'
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
-      - run: docker save "quay.io/cephcsi/cephcsi:${{ steps.v.outputs.version }}" | zstd -T0 -o image.tar.zst
+      - run: docker save "quay.io/cephcsi/cephcsi:$CEPH_CSI_VERSION" | zstd -T0 -o image.tar.zst
       - uses: actions/upload-artifact@v7
         with:
-          name: build
+          name: build-${{ env.CEPH_CSI_VERSION }}
           path: |
             image.tar.zst
             src/e2e.test
@@ -51,7 +78,10 @@ jobs:
 
   # Upstream's .github/workflows, target for target.
   static:
+    needs: version
     runs-on: ubuntu-24.04
+    env:
+      CEPH_CSI_VERSION: ${{ needs.version.outputs.version }}
     strategy:
       fail-fast: false
       matrix:
@@ -62,7 +92,10 @@ jobs:
       - run: ./build.sh make containerized-test TARGET=${{ matrix.target }}
 
   uncommitted-code-check:
+    needs: version
     runs-on: ubuntu-24.04
+    env:
+      CEPH_CSI_VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
       - run: ./build.sh checkout
@@ -70,22 +103,22 @@ jobs:
       - run: ./build.sh make check-all-committed
 
   cpu:
-    needs: build
+    needs: [version, build]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
-          name: build
+          name: build-${{ needs.version.outputs.version }}
       - run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
           zstd -dc image.tar.zst | docker load
           docker pull -q "$UPSTREAM_V3_IMAGE"
           chmod +x test/smoke
       - name: ours on Ivy Bridge (kube-worker-04)
-        run: test/cpu.sh "quay.io/cephcsi/cephcsi:${{ needs.build.outputs.version }}" IvyBridge pass
+        run: test/cpu.sh "quay.io/cephcsi/cephcsi:${{ needs.version.outputs.version }}" IvyBridge pass
       - name: ours on Nehalem (plain x86-64-v2, no AVX)
-        run: test/cpu.sh "quay.io/cephcsi/cephcsi:${{ needs.build.outputs.version }}" Nehalem pass
+        run: test/cpu.sh "quay.io/cephcsi/cephcsi:${{ needs.version.outputs.version }}" Nehalem pass
       - name: upstream v3.18.0 on Ivy Bridge must be refused
         run: test/cpu.sh "$UPSTREAM_V3_IMAGE" IvyBridge fail
       - name: upstream v3.18.0 on Haswell runs (the harness is not the failure)
@@ -93,21 +126,23 @@ jobs:
 
   # Upstream's snyk jobs need its token; report-only substitute.
   scan:
-    needs: build
+    needs: [version, build]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: build
+          name: build-${{ needs.version.outputs.version }}
       - run: |
           zstd -d image.tar.zst -o image.tar
           docker run --rm -v "$PWD/image.tar:/image.tar:ro" aquasec/trivy:latest image --quiet --input /image.tar \
             --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0
 
   e2e:
-    needs: build
+    needs: [version, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 350
+    env:
+      CEPH_CSI_VERSION: ${{ needs.version.outputs.version }}
     strategy:
       fail-fast: false
       matrix:
@@ -141,31 +176,34 @@ jobs:
       - run: ./build.sh checkout
       - uses: actions/download-artifact@v8
         with:
-          name: build
+          name: build-${{ needs.version.outputs.version }}
       - run: zstd -dc image.tar.zst | docker load
       - run: cd src && ../test/e2e.sh ${{ matrix.suite }} ${{ matrix.k8s }} ${{ matrix.type }}
       - if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: e2e-logs-${{ matrix.suite }}-${{ matrix.k8s }}-${{ matrix.type }}
+          name: e2e-logs-${{ env.CEPH_CSI_VERSION }}-${{ matrix.suite }}-${{ matrix.k8s }}-${{ matrix.type }}
           path: /tmp/acceptance-e2e-logs/
           retention-days: 7
 
-  publish:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [build, static, uncommitted-code-check, cpu, e2e]
+  # Only when called by release.yml, after every test above passed. Never overwrites a tag (release/release.sh).
+  release:
+    if: inputs.release
+    needs: [version, build, static, uncommitted-code-check, cpu, e2e]
     runs-on: ubuntu-24.04
     permissions:
+      contents: write
       packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DRY_RUN: ${{ inputs.dry_run }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v8
         with:
-          name: build
-      - run: |
-          zstd -dc image.tar.zst | docker load
-          ref=ghcr.io/lhns/ceph-csi-x86-64-v2:${{ needs.build.outputs.version }}
-          docker tag "quay.io/cephcsi/cephcsi:${{ needs.build.outputs.version }}" "$ref"
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker push "$ref"
-          digest=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}' | jq -r .digest)
-          echo "Published \`$ref@$digest\`" | tee -a "$GITHUB_STEP_SUMMARY"
+          name: build-${{ needs.version.outputs.version }}
+      - run: zstd -dc image.tar.zst | docker load
+      - run: echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - run: release/release.sh publish "${{ needs.version.outputs.version }}"

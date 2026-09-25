@@ -1,6 +1,6 @@
 version: 2
 updates:
-  # versions.Dockerfile: the ceph-csi release, and the Rocky 9 base digests.
+  # versions.Dockerfile: the Rocky 9 base digests.
   - package-ecosystem: docker
     directory: /
     schedule:

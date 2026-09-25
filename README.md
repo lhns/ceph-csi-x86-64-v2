@@ -32,10 +32,14 @@ to tell a regression in this build from a harness or runner problem.
 
 ## Releasing
 
-1. Upstream tags a release.
-2. Dependabot bumps the tag in [`versions.Dockerfile`](versions.Dockerfile) (the pins; never built) and opens a PR.
-3. CI runs everything above on the PR. Merging reruns it on `main`, then publishes the tested image as
-   `ghcr.io/lhns/ceph-csi-x86-64-v2:<tag>`; the digest is in the run summary.
-4. Consumers pin that digest.
+[`release.yml`](.github/workflows/release.yml) runs daily. Every stable upstream release from v3.18.0 on that has no
+GitHub release here goes through all of the above ([`ci.yml`](.github/workflows/ci.yml), one run per version). If
+everything passes, the image is pushed once as `ghcr.io/lhns/ceph-csi-x86-64-v2:<version>`, and a GitHub release
+`<version>` records its digest, base images and CI run. A tag that is already in ghcr is never pushed again; it
+only gets its missing release. A failed version publishes nothing and is retried the next day.
 
-The Rocky 9 digests are bumped the same way. A rebuild republishes the same tag under a new digest.
+Pushes and PRs only test, against the newest supported upstream release.
+[`versions.Dockerfile`](versions.Dockerfile) pins the Rocky 9 bases (never built); Dependabot bumps them, and the next
+new version is built on them. Consumers pin the digest from the release.
+
+`workflow_dispatch` with `dry_run` plans, builds and tests without publishing.

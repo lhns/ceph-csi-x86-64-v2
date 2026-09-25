@@ -1,16 +1,73 @@
-# Placeholder so release.yml can be dispatched on a branch (workflow_dispatch needs the file on main).
-# Replaced by the real workflow in the release PR.
+# Releases every stable upstream version (>= v3.18.0) that has no GitHub release here, each through the full ci.yml.
+# A version already in ghcr is released for its existing digest, never rebuilt or overwritten.
 name: release
 on:
+  schedule:
+    - cron: "23 5 * * *"
   workflow_dispatch:
     inputs:
       version:
+        description: Only this upstream version (e.g. v3.18.1)
         default: ""
       dry_run:
+        description: Plan, build and test, but push nothing and create no release. With a version, tests it even if released.
         type: boolean
-        default: true
+        default: false
+permissions:
+  contents: read
+# One release run at a time, so no version is published or released twice.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
-  noop:
+  plan:
     runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      adopt: ${{ steps.plan.outputs.adopt }}
     steps:
-      - run: echo "placeholder; dispatch on the release PR branch"
+      - uses: actions/checkout@v7
+      - id: plan
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run == true }}
+          VERSION: ${{ inputs.version }}
+        run: release/release.sh plan $VERSION 2>&1 >>"$GITHUB_OUTPUT" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # One ci.yml per version; a failing version does not stop the others.
+  build:
+    needs: plan
+    if: needs.plan.outputs.build != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(needs.plan.outputs.build) }}
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/ci.yml
+    with:
+      version: ${{ matrix.version }}
+      release: true
+      dry_run: ${{ inputs.dry_run == true }}
+
+  adopt:
+    needs: plan
+    if: needs.plan.outputs.adopt != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(needs.plan.outputs.adopt) }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run == true }}
+        run: release/release.sh adopt "${{ matrix.version }}"
