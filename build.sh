@@ -20,10 +20,14 @@ checkout)
 	cd "$src"
 	# Upstream's only x86-64-v3 dependency is its EL10 base; Tentacle ships the same packages for EL9.
 	sed -i -e "s|^BASE_IMAGE=.*|BASE_IMAGE=$base|" \
+		-e "s|^FINAL_BASE_IMAGE=.*|FINAL_BASE_IMAGE=$final|" \
 		-e 's|^\(CEPH_RELEASE_RPM=.*\)/el10/noarch/ceph-release-1-1\.el10\.noarch\.rpm$|\1/el9/noarch/ceph-release-1-1.el9.noarch.rpm|' \
 		build.env
 	grep -qx "BASE_IMAGE=$base" build.env || {
 		echo "build.env: BASE_IMAGE not rewritten; upstream changed it" >&2; exit 1; }
+	# Absent before v3.18.1. Where present, the Makefile passes it after $(CPUSET), so it wins.
+	! grep -q '^FINAL_BASE_IMAGE=' build.env || grep -qx "FINAL_BASE_IMAGE=$final" build.env || {
+		echo "build.env: FINAL_BASE_IMAGE not rewritten; upstream changed it" >&2; exit 1; }
 	grep -q '^CEPH_RELEASE_RPM=.*/el9/noarch/ceph-release-1-1\.el9\.noarch\.rpm$' build.env || {
 		echo "build.env: CEPH_RELEASE_RPM not rewritten; upstream changed it" >&2; exit 1; }
 	# Committed so upstream's "tree is clean" checks (mod-check, check-all-committed) still apply.
@@ -40,7 +44,8 @@ image)
 		org.opencontainers.image.base.name="$final"
 		io.github.lhns.ci-run="${GITHUB_SERVER_URL:-}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-}"
 	)
-	# The Makefile doesn't forward FINAL_BASE_IMAGE; $(CPUSET) is the free slot in its `docker build` line.
+	# Makefiles before v3.18.1 don't forward FINAL_BASE_IMAGE; $(CPUSET) is the free slot in their
+	# `docker build` line. From v3.18.1 build.env carries it, rewritten in checkout.
 	make image-cephcsi CONTAINER_CMD=docker GOARCH=amd64 GIT_COMMIT="$(git rev-parse HEAD^)" \
 		CPUSET="--build-arg=FINAL_BASE_IMAGE=$final $(printf -- '--label=%s ' "${labels[@]}")"
 	;;
