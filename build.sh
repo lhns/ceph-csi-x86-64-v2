@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds upstream ceph-csi $CEPH_CSI_VERSION with its own Makefile, on the EL9 (x86-64-v2) base pinned in
 # versions.Dockerfile.
-#   build.sh checkout     clone ceph/ceph-csi at that tag into ./src and point build.env at our base
+#   build.sh checkout     clone ceph/ceph-csi at that tag into ./src, point build.env at our base, apply patches/
 #   build.sh image        make image-cephcsi -> quay.io/cephcsi/cephcsi:<tag>, the name upstream's e2e deploys
 #   build.sh make ARGS    any other upstream make target
 set -euo pipefail
@@ -30,8 +30,21 @@ checkout)
 		echo "build.env: FINAL_BASE_IMAGE not rewritten; upstream changed it" >&2; exit 1; }
 	grep -q '^CEPH_RELEASE_RPM=.*/el9/noarch/ceph-release-1-1\.el9\.noarch\.rpm$' build.env || {
 		echo "build.env: CEPH_RELEASE_RPM not rewritten; upstream changed it" >&2; exit 1; }
+	# Fixes to upstream's e2e harness (e2e/ only, not in the image). A patch that reverses cleanly is
+	# upstream already; one that neither applies nor reverses fails the build.
+	for p in "$here"/patches/*.patch; do
+		if git apply --check "$p" 2>/dev/null; then
+			git apply "$p"
+		elif git apply --reverse --check "$p" 2>/dev/null; then
+			echo "${p##*/}: already upstream, skipped"
+		else
+			echo "${p##*/} does not apply to $version" >&2
+			exit 1
+		fi
+	done
 	# Committed so upstream's "tree is clean" checks (mod-check, check-all-committed) still apply.
-	git -c user.name=ceph-csi-x86-64-v2 -c user.email=noreply@github.com commit --quiet -am "build.env: x86-64-v2 base"
+	git add -A
+	git -c user.name=ceph-csi-x86-64-v2 -c user.email=noreply@github.com commit --quiet -m "x86-64-v2 base, e2e fixes"
 	git --no-pager show --stat --format='%h %s' HEAD
 	git --no-pager diff HEAD^ HEAD
 	;;

@@ -1,0 +1,264 @@
+diff --git a/e2e/controller_settle.go b/e2e/controller_settle.go
+new file mode 100644
+index 0000000..b4a1763
+--- /dev/null
++++ b/e2e/controller_settle.go
+@@ -0,0 +1,170 @@
++/*
++Copyright 2026 The Ceph-CSI Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++*/
++
++package e2e
++
++import (
++	"context"
++	"fmt"
++	"slices"
++	"strings"
++	"time"
++
++	v1 "k8s.io/api/core/v1"
++	apierrs "k8s.io/apimachinery/pkg/api/errors"
++	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
++	"k8s.io/apimachinery/pkg/util/wait"
++	"k8s.io/client-go/kubernetes"
++	"k8s.io/kubernetes/test/e2e/framework"
++)
++
++// waitForControllerSettled waits until the deployment runs only Ready pods of its
++// current template, none terminating, and no unexpired leader lease is held by
++// one of its former pods. A terminating controller pod still serves CSI calls and
++// leaves half-done work behind when it is killed.
++func waitForControllerSettled(c kubernetes.Interface, name, ns string, timeout int) error {
++	t := time.Duration(timeout) * time.Minute
++	err := wait.PollUntilContextTimeout(context.TODO(), poll, t, true, func(ctx context.Context) (bool, error) {
++		current, err := currentControllerPods(ctx, c, name, ns)
++		if err != nil || current == nil {
++			return false, ignoreRetryable(err)
++		}
++		holder, err := formerPodLeaseHolder(ctx, c, name, ns, current)
++		if err != nil || holder != "" {
++			return false, ignoreRetryable(err)
++		}
++
++		return true, nil
++	})
++	if err != nil {
++		return fmt.Errorf("deployment %s/%s did not settle: %w", ns, name, err)
++	}
++	framework.Logf("deployment %s/%s settled", ns, name)
++
++	return nil
++}
++
++func ignoreRetryable(err error) error {
++	if err != nil && isRetryableAPIError(err) {
++		return nil
++	}
++
++	return err
++}
++
++// currentControllerPods returns the names of the deployment's pods, as leader election
++// holder identities spell them, or nil while its rollout is not complete.
++func currentControllerPods(ctx context.Context, c kubernetes.Interface, name, ns string) ([]string, error) {
++	d, err := c.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{})
++	if err != nil {
++		return nil, err
++	}
++	want := int32(1)
++	if d.Spec.Replicas != nil {
++		want = *d.Spec.Replicas
++	}
++	s := d.Status
++	if s.ObservedGeneration < d.Generation || s.UpdatedReplicas != want || s.Replicas != want || s.ReadyReplicas != want {
++		framework.Logf("deployment %s/%s: rollout in progress (generation %d/%d, replicas %d/%d/%d, want %d)",
++			ns, name, s.ObservedGeneration, d.Generation, s.Replicas, s.UpdatedReplicas, s.ReadyReplicas, want)
++
++		return nil, nil
++	}
++
++	pods, err := c.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{
++		LabelSelector: metav1.FormatLabelSelector(d.Spec.Selector),
++	})
++	if err != nil {
++		return nil, err
++	}
++	current := make([]string, 0, len(pods.Items))
++	for i := range pods.Items {
++		p := &pods.Items[i]
++		if p.DeletionTimestamp != nil || !isPodConditionTrue(p, v1.PodReady) {
++			framework.Logf("deployment %s/%s: pod %s terminating or not ready", ns, name, p.Name)
++
++			return nil, nil
++		}
++		current = append(current, strings.ReplaceAll(p.Name, ".", "-"))
++	}
++	if int32(len(current)) != want {
++		framework.Logf("deployment %s/%s: %d pods, want %d", ns, name, len(current), want)
++
++		return nil, nil
++	}
++
++	return current, nil
++}
++
++// formerPodLeaseHolder returns a former pod of the deployment that still holds an
++// unexpired lease, or "". An expired lease binds nobody; a current pod takes it on demand.
++func formerPodLeaseHolder(
++	ctx context.Context,
++	c kubernetes.Interface,
++	name, ns string,
++	current []string,
++) (string, error) {
++	leases, err := c.CoordinationV1().Leases(ns).List(ctx, metav1.ListOptions{})
++	if err != nil {
++		return "", err
++	}
++	prefix := strings.ReplaceAll(name, ".", "-") + "-"
++	now := time.Now()
++	for i := range leases.Items {
++		l := &leases.Items[i].Spec
++		if l.HolderIdentity == nil || !strings.HasPrefix(*l.HolderIdentity, prefix) {
++			continue
++		}
++		holder := *l.HolderIdentity
++		if slices.ContainsFunc(current, func(p string) bool { return strings.HasPrefix(holder, p) }) {
++			continue
++		}
++		if l.RenewTime != nil && l.LeaseDurationSeconds != nil &&
++			now.After(l.RenewTime.Add(time.Duration(*l.LeaseDurationSeconds)*time.Second)) {
++			continue
++		}
++		framework.Logf("deployment %s/%s: lease %s still held by former pod %q", ns, name, leases.Items[i].Name, holder)
++
++		return holder, nil
++	}
++
++	return "", nil
++}
++
++func isPodConditionTrue(p *v1.Pod, t v1.PodConditionType) bool {
++	for i := range p.Status.Conditions {
++		if p.Status.Conditions[i].Type == t {
++			return p.Status.Conditions[i].Status == v1.ConditionTrue
++		}
++	}
++
++	return false
++}
++
++// ensureKMSConfigMap recreates the KMS configmap that the operator-deployed plugins
++// mount. deleteVault removes it, and without it restarted plugin pods never start.
++func ensureKMSConfigMap(c kubernetes.Interface, ns string) error {
++	cm := &v1.ConfigMap{
++		ObjectMeta: metav1.ObjectMeta{Name: "ceph-csi-encryption-kms-config", Namespace: ns},
++		Data:       map[string]string{"config.json": "{}"},
++	}
++	_, err := c.CoreV1().ConfigMaps(ns).Create(context.TODO(), cm, metav1.CreateOptions{})
++	if err != nil && !apierrs.IsAlreadyExists(err) {
++		return fmt.Errorf("failed to create KMS configmap: %w", err)
++	}
++
++	return nil
++}
+diff --git a/e2e/operator.go b/e2e/operator.go
+index 68482ec..e27de53 100644
+--- a/e2e/operator.go
++++ b/e2e/operator.go
+@@ -66,7 +66,12 @@ func (r *OperatorDeployment) getPodSelector() string {
+ 	return fmt.Sprintf("app in (%s, %s)", r.deploymentName, r.daemonsetName)
+ }
+ 
+-func (OperatorDeployment) setClusterName(value string) error {
++func (r OperatorDeployment) setClusterName(value string) error {
++	oldGeneration, err := getDeploymentGeneration(r.clientSet, r.deploymentName, cephCSINamespace)
++	if err != nil {
++		return fmt.Errorf("failed to get deployment generation before patching: %w", err)
++	}
++
+ 	command := []string{
+ 		"operatorconfigs.csi.ceph.io",
+ 		OperatorConfigName,
+@@ -76,12 +81,30 @@ func (OperatorDeployment) setClusterName(value string) error {
+ 	}
+ 
+ 	// Patch the operator config
+-	err := retryKubectlArgs(cephCSINamespace, kubectlPatch, deployTimeout, command...)
++	err = retryKubectlArgs(cephCSINamespace, kubectlPatch, deployTimeout, command...)
+ 	if err != nil {
+ 		return fmt.Errorf("failed to set cluster name: %w", err)
+ 	}
+ 
+-	return nil
++	return r.waitForRollout(oldGeneration)
++}
++
++// waitForRollout waits for the operator's rollout after an OperatorConfig patch,
++// if one was triggered, then until no former controller pod is left.
++func (r OperatorDeployment) waitForRollout(oldGeneration int64) error {
++	changed, err := waitForDeploymentGenerationChange(r.clientSet, r.deploymentName, cephCSINamespace, oldGeneration)
++	if err != nil {
++		return fmt.Errorf("error checking deployment %s generation: %w", r.deploymentName, err)
++	}
++
++	if changed {
++		err = waitForCSI(r.clientSet, r.deploymentName, r.daemonsetName, cephCSINamespace, deployTimeout)
++		if err != nil {
++			return fmt.Errorf("failed waiting for CSI rollout: %w", err)
++		}
++	}
++
++	return waitForControllerSettled(r.clientSet, r.deploymentName, cephCSINamespace, deployTimeout)
+ }
+ 
+ func (r OperatorDeployment) setEnableFencing(enable bool) error {
+@@ -122,7 +145,7 @@ func (r OperatorDeployment) setEnableFencing(enable bool) error {
+ 		return fmt.Errorf("failed waiting for leader lease transfer after rollout: %w", err)
+ 	}
+ 
+-	return nil
++	return waitForControllerSettled(r.clientSet, r.deploymentName, cephCSINamespace, deployTimeout)
+ }
+ 
+ func getDeploymentGeneration(c clientset.Interface, name, ns string) (int64, error) {
+diff --git a/e2e/snapshot_metadata.go b/e2e/snapshot_metadata.go
+index 832f7db..a1e49c2 100644
+--- a/e2e/snapshot_metadata.go
++++ b/e2e/snapshot_metadata.go
+@@ -73,6 +73,10 @@ var _ = Describe("RBD", func() {
+ 			err = createNamespace(clientSet, testNamespace)
+ 			Expect(err).ShouldNot(HaveOccurred(), "failed to create test namespace")
+ 
++			// The plugins mount it; the RBD suite's AfterAll deletes it when it runs first.
++			err = ensureKMSConfigMap(clientSet, cephCSINamespace)
++			Expect(err).ShouldNot(HaveOccurred())
++
+ 			// RBD prerequisites: node labels, configmap, secrets
+ 			err = addLabelsToNodes(f, map[string]string{
+ 				nodeRegionLabel:          regionValue,
+diff --git a/e2e/utils.go b/e2e/utils.go
+index 53c7908..087c993 100644
+--- a/e2e/utils.go
++++ b/e2e/utils.go
+@@ -157,7 +157,7 @@ func (d *DriverInfo) setClusterName(clusterName string) error {
+ 		return fmt.Errorf("timeout waiting for clustername arg update %s/%s: %v", cephCSINamespace, d.deploymentName, err)
+ 	}
+ 
+-	return nil
++	return waitForControllerSettled(d.clientSet, d.deploymentName, cephCSINamespace, deployTimeout)
+ }
+ 
+ func (d *DriverInfo) setEnableFencing(enable bool) error {

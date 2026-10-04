@@ -30,6 +30,9 @@ A few specs fail identically with upstream's own image in this harness; `e2e.sh`
 [`e2e-upstream-image.yml`](.github/workflows/e2e-upstream-image.yml) runs one e2e job against upstream's image,
 to tell a regression in this build from a harness or runner problem.
 
+[`patches/`](patches) fixes races in upstream's e2e code; `e2e/` only, the image is not patched.
+`build.sh checkout` applies them and skips any that upstream has since taken.
+
 ## Releasing
 
 [`release.yml`](.github/workflows/release.yml) runs daily. Every stable upstream release from v3.18.0 on that has no
