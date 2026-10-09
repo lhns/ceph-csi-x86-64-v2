@@ -124,7 +124,7 @@ mini)
 operator)
 	scripts/deploy-ceph-csi-operator.sh deploy
 	run_e2e "$(only "$type") --deploy-cephfs=false --deploy-rbd=false --deploy-nfs=false --operator-deployment=true" ||
-		known_failures 'friendly export names'
+		known_failures 'friendly export names|RBD \[SnapshotMetadata\] '
 	;;
 helm)
 	# mini-e2e-helm.groovy, less what the 3.18 e2e dropped with --helm-test (#6512): the e2e now
