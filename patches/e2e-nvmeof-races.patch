@@ -1,0 +1,57 @@
+diff --git a/e2e/nvmeof_helper.go b/e2e/nvmeof_helper.go
+index 647d636..e6ba582 100644
+--- a/e2e/nvmeof_helper.go
++++ b/e2e/nvmeof_helper.go
+@@ -21,6 +21,7 @@ import (
+ 	"encoding/json"
+ 	"fmt"
+ 	"sync"
++	"time"
+ 
+ 	"github.com/google/uuid"
+ 	"go.yaml.in/yaml/v2"
+@@ -234,6 +235,9 @@ func mixedCreateDeletePodsOnly(
+ 	pvc.Spec.StorageClassName = &storageClassName
+ 
+ 	pvcBaseName := uuid.NewString()
++	// ControllerUnpublish takes a per-node lock and returns Aborted on contention, so with
++	// 15 volumes detaching from one node the attacher's backoff (up to 5m) can outlast deployTimeout.
++	detachTimeout := 2 * deployTimeout
+ 
+ 	// cleanupPodsAndPVCs cleans up pods (if result provided) and all PVCs
+ 	cleanupPodsAndPVCs := func(podResult *concurrentPodsResult) {
+@@ -247,7 +251,7 @@ func mixedCreateDeletePodsOnly(
+ 			pvcName := fmt.Sprintf("%s-%d", pvcBaseName, i)
+ 			pvcCopy := pvc.DeepCopy()
+ 			pvcCopy.Name = pvcName
+-			_ = deletePVCAndValidatePV(f.ClientSet, pvcCopy, deployTimeout)
++			_ = deletePVCAndValidatePV(f.ClientSet, pvcCopy, detachTimeout)
+ 		}
+ 	}
+ 
+@@ -399,7 +403,7 @@ func mixedCreateDeletePodsOnly(
+ 		pvcCopy.Name = pvcName
+ 
+ 		framework.Logf("Deleting PVC %d/%d: %s", i+1, totalCount, pvcName)
+-		err = deletePVCAndValidatePV(f.ClientSet, pvcCopy, deployTimeout)
++		err = deletePVCAndValidatePV(f.ClientSet, pvcCopy, detachTimeout)
+ 		if err != nil {
+ 			allErrors = append(allErrors, fmt.Errorf("failed to delete PVC %s: %w", pvcName, err))
+ 		}
+@@ -452,7 +456,15 @@ func verifyAllowHostNQNsViaConnect(f *framework.Framework, gatewayIP, allowHostN
+ 	allowedHost := allowedHosts[0]
+ 	framework.Logf("Testing connection with ALLOWED host NQN: %s", allowedHost)
+ 
+-	connected := testNVMeConnection(f, nodePluginPod, gatewayIP, allowedHost)
++	// The gateway's discovery service can reject the first request right after the hosts
++	// were added ("not discovery request"), so give it a few attempts.
++	connected := false
++	for attempt := 1; attempt <= 3 && !connected; attempt++ {
++		if attempt > 1 {
++			time.Sleep(5 * time.Second)
++		}
++		connected = testNVMeConnection(f, nodePluginPod, gatewayIP, allowedHost)
++	}
+ 
+ 	if !connected {
+ 		return fmt.Errorf("connection failed for allowed host NQN %s", allowedHost)
