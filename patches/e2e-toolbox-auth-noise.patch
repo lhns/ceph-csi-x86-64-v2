@@ -1,0 +1,20 @@
+diff --git a/e2e/pod.go b/e2e/pod.go
+index 8fad423..9af6499 100644
+--- a/e2e/pod.go
++++ b/e2e/pod.go
+@@ -324,9 +324,14 @@ func execCommandInToolBoxPod(f *framework.Framework, c, ns string) (string, stri
+ 		framework.Logf("stdErr occurred: %v", stdErr)
+ 	}
+ 
+-	return stdOut, stdErr, err
++	return stdOut, cephClientNoise.ReplaceAllString(stdErr, ""), err
+ }
+ 
++// cephClientNoise matches what librados logs when one of its parallel mon connections
++// loses the auth handshake race; the command still succeeds. Callers fail on any stderr.
++var cephClientNoise = regexp.MustCompile(`(?m)^\S+ \S+ -1 monclient: (` +
++	`handle_auth_reply_more no authorizer\?|get_auth_request but no auth handler is set up)\n?`)
++
+ func execCommandInPodAndAllowFail(f *framework.Framework, c, ns string, opt *metav1.ListOptions) (string, string) {
+ 	podOpt, err := getCommandInPodOpts(f, c, ns, "", opt)
+ 	if err != nil {
