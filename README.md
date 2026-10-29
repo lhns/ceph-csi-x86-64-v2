@@ -46,3 +46,8 @@ Pushes and PRs only test, against the newest supported upstream release.
 new version is built on them. Consumers pin the digest from the release.
 
 `workflow_dispatch` with `dry_run` plans, builds and tests without publishing.
+
+## Decisions
+
+Recorded in [`docs/adr/`](docs/adr). The x86-64-v2 Ceph image itself is built in
+[lhns/ceph-nix](https://github.com/lhns/ceph-nix) ([ADR 0003](docs/adr/0003-ceph-image-lives-in-ceph-nix.md)).
